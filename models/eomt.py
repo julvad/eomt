@@ -32,24 +32,24 @@ class EoMT(nn.Module):
 
         self.register_buffer("attn_mask_probs", torch.ones(num_blocks))
 
-        self.q = nn.Embedding(num_q, self.encoder.backbone.embed_dim)
+        self.q = nn.Embedding(num_q, self.encoder.embed_dim)
 
-        self.class_head = nn.Linear(self.encoder.backbone.embed_dim, num_classes + 1)
+        self.class_head = nn.Linear(self.encoder.embed_dim, num_classes + 1)
 
         self.mask_head = nn.Sequential(
-            nn.Linear(self.encoder.backbone.embed_dim, self.encoder.backbone.embed_dim),
+            nn.Linear(self.encoder.embed_dim, self.encoder.embed_dim),
             nn.GELU(),
-            nn.Linear(self.encoder.backbone.embed_dim, self.encoder.backbone.embed_dim),
+            nn.Linear(self.encoder.embed_dim, self.encoder.embed_dim),
             nn.GELU(),
-            nn.Linear(self.encoder.backbone.embed_dim, self.encoder.backbone.embed_dim),
+            nn.Linear(self.encoder.embed_dim, self.encoder.embed_dim),
         )
 
-        patch_size = encoder.backbone.patch_embed.patch_size
+        patch_size = encoder.patch_embed.patch_size
         max_patch_size = max(patch_size[0], patch_size[1])
         num_upscale = max(1, int(math.log2(max_patch_size)) - 2)
 
         self.upscale = nn.Sequential(
-            *[ScaleBlock(self.encoder.backbone.embed_dim) for _ in range(num_upscale)],
+            *[ScaleBlock(self.encoder.embed_dim) for _ in range(num_upscale)],
         )
 
     def _predict(self, x: torch.Tensor):
@@ -57,9 +57,9 @@ class EoMT(nn.Module):
 
         class_logits = self.class_head(q)
 
-        x = x[:, self.num_q + self.encoder.backbone.num_prefix_tokens :, :]
+        x = x[:, self.num_q + self.encoder.num_prefix_tokens :, :]
         x = x.transpose(1, 2).reshape(
-            x.shape[0], -1, *self.encoder.backbone.patch_embed.grid_size
+            x.shape[0], -1, *self.encoder.patch_embed.grid_size
         )
 
         mask_logits = torch.einsum(
@@ -76,7 +76,7 @@ class EoMT(nn.Module):
                 > prob
             )
             attn_mask[
-                :, : self.num_q, self.num_q + self.encoder.backbone.num_prefix_tokens :
+                :, : self.num_q, self.num_q + self.encoder.num_prefix_tokens :
             ][random_queries] = True
 
         return attn_mask
@@ -128,51 +128,51 @@ class EoMT(nn.Module):
         )
         interpolated = F.interpolate(
             mask_logits,
-            self.encoder.backbone.patch_embed.grid_size,
+            self.encoder.patch_embed.grid_size,
             mode="bilinear",
         )
         interpolated = interpolated.view(interpolated.size(0), interpolated.size(1), -1)
         attn_mask[
             :,
             : self.num_q,
-            self.num_q + self.encoder.backbone.num_prefix_tokens :,
+            self.num_q + self.encoder.num_prefix_tokens :,
         ] = (
             interpolated > 0
         )
         attn_mask = self._disable_attn_mask(
             attn_mask,
             self.attn_mask_probs[
-                i - len(self.encoder.backbone.blocks) + self.num_blocks
+                i - len(self.encoder.blocks) + self.num_blocks
             ],
         )
         return attn_mask
 
     def forward(self, x: torch.Tensor):
-        x = (x - self.encoder.pixel_mean) / self.encoder.pixel_std
+        # x = (x - self.encoder.pixel_mean) / self.encoder.pixel_std
 
         rope = None
-        if hasattr(self.encoder.backbone, "rope_embeddings"):
-            rope = self.encoder.backbone.rope_embeddings(x)
+        if hasattr(self.encoder, "rope_embeddings"):
+            rope = self.encoder.rope_embeddings(x)
 
-        x = self.encoder.backbone.patch_embed(x)
+        x = self.encoder.patch_embed(x)
 
-        if hasattr(self.encoder.backbone, "_pos_embed"):
-            x = self.encoder.backbone._pos_embed(x)
+        if hasattr(self.encoder, "_pos_embed"):
+            x = self.encoder._pos_embed(x)
 
         attn_mask = None
         mask_logits_per_layer, class_logits_per_layer = [], []
 
-        for i, block in enumerate(self.encoder.backbone.blocks):
-            if i == len(self.encoder.backbone.blocks) - self.num_blocks:
+        for i, block in enumerate(self.encoder.blocks):
+            if i == len(self.encoder.blocks) - self.num_blocks:
                 x = torch.cat(
                     (self.q.weight[None, :, :].expand(x.shape[0], -1, -1), x), dim=1
                 )
 
             if (
                 self.masked_attn_enabled
-                and i >= len(self.encoder.backbone.blocks) - self.num_blocks
+                and i >= len(self.encoder.blocks) - self.num_blocks
             ):
-                mask_logits, class_logits = self._predict(self.encoder.backbone.norm(x))
+                mask_logits, class_logits = self._predict(self.encoder.norm(x))
                 mask_logits_per_layer.append(mask_logits)
                 class_logits_per_layer.append(class_logits)
 
@@ -194,7 +194,7 @@ class EoMT(nn.Module):
             elif hasattr(block, "layer_scale2"):
                 x = x + block.layer_scale2(mlp_out)
 
-        mask_logits, class_logits = self._predict(self.encoder.backbone.norm(x))
+        mask_logits, class_logits = self._predict(self.encoder.norm(x))
         mask_logits_per_layer.append(mask_logits)
         class_logits_per_layer.append(class_logits)
 
